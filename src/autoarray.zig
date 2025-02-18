@@ -9,13 +9,13 @@ pub fn AutoArray(comptime T: type) type {
         capacity: u64,
         size: u64,
 
-        pub fn init(initial_capacity: u64) !Self {
+        pub fn init(initial_capacity: u64, base_addr: ?[*]align(page_size) u8) !Self {
             const items_per_page = page_size / @sizeOf(T);
             const num_pages = (initial_capacity + items_per_page - 1) / items_per_page;
             const mapped_size = num_pages * page_size;
             const capacity = mapped_size / @sizeOf(T);
 
-            const mem = try std.posix.mmap(null, mapped_size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
+            const mem = try std.posix.mmap(base_addr, mapped_size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .FIXED_NOREPLACE = base_addr != null }, -1, 0);
 
             return .{
                 .base_ptr = @as([*]align(page_size) T, @alignCast(@ptrCast(mem.ptr))),
@@ -57,7 +57,7 @@ pub fn AutoArray(comptime T: type) type {
                 .ANONYMOUS = true,
                 .FIXED_NOREPLACE = true,
             }, -1, 0) catch |err| {
-                if (err == error.Unexpected) {
+                if (err == error.MappingAlreadyExists) {
                     const full_new_mem = try std.posix.mmap(null, expanded_mapped_size, std.posix.PROT.READ | std.posix.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
 
                     const old_slice = self.base_ptr[0..self.size];
@@ -83,7 +83,8 @@ test "AutoArray initialization allocates full page capacity" {
     };
 
     // initialize with less than one page worth of items
-    var array = try AutoArray(TestStruct).init(1);
+    const base_addr = @as([*]align(page_size) u8, @ptrFromInt(0x40000000));
+    var array = try AutoArray(TestStruct).init(1, base_addr);
     defer array.deinit();
 
     // expect the capacity to be one full page worth of items
@@ -101,7 +102,8 @@ test "AutoArray initilization rounds up to full pages" {
     const items_per_page = page_size / @sizeOf(TestStruct);
     const one_and_half_pages = items_per_page + items_per_page / 2;
 
-    var array = try AutoArray(TestStruct).init(one_and_half_pages);
+    const base_addr = @as([*]align(page_size) u8, @ptrFromInt(0x80000000));
+    var array = try AutoArray(TestStruct).init(one_and_half_pages, base_addr);
     defer array.deinit();
 
     // expect the capacity to round up to two full pages
@@ -115,8 +117,9 @@ test "AutoArray zero-copy expansion" {
     };
 
     // initialize with exactly one page
+    const base_addr = @as([*]align(page_size) u8, @ptrFromInt(0xC0000000));
     const items_per_page = page_size / @sizeOf(TestStruct);
-    var array = try AutoArray(TestStruct).init(items_per_page);
+    var array = try AutoArray(TestStruct).init(items_per_page, base_addr);
     defer array.deinit();
 
     // save the original address to verify contiguous expansion
@@ -140,8 +143,9 @@ test "AutoArray fallback expansion when address space is occupied" {
     };
 
     // initialize with exactly one page
+    const base_addr = @as([*]align(page_size) u8, @ptrFromInt(0x100000000));
     const items_per_page = page_size / @sizeOf(TestStruct);
-    var array = try AutoArray(TestStruct).init(items_per_page);
+    var array = try AutoArray(TestStruct).init(items_per_page, base_addr);
     defer array.deinit();
 
     // map the next page to force a fallback
